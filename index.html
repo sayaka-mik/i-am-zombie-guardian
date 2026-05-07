@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>못된 인간 1.1</title>
+    <title>못된 인간 1.2</title>
     <style>
         * { box-sizing: border-box; touch-action: manipulation; }
         body {
@@ -87,18 +87,18 @@
             <span>탈출 성공<span id="escape-count" class="stat-val">0</span></span>
             <span>사망 좀비<span id="death-count" class="stat-val death-val">0</span></span>
         </div>
-        <div>필드 잔류 좀비: <span id="remain-count" class="remain-val">0</span> / 10</div>
+        <div>필드 잔류 좀비: <span id="remain-count" class="remain-val">0</span> / <span id="max-count">0</span></div>
     </div>
 
     <div id="game-board"></div>
 
     <div id="controls">
         <div class="left-menu">
-            <button onclick="location.reload()" class="btn-menu">새 전장 생성</button>
-            <div style="font-size: 10px; color: #666; text-align: center;">전원 탈출/사망 시<br>판갈이 진행</div>
+            <button onclick="location.reload()" class="btn-menu">초기화</button>
+            <div style="font-size: 10px; color: #666; text-align: center;">당신은 좀비의 성좌입니다.<br>못된 인간은 좀비를 괴롭혀.<br>좀비들을 탈출시키세요!</div>
         </div>
         <button id="btn-grace" class="btn-grace" onclick="castGrace()">
-            은혜 베풀기 ⚡
+            좀비 도와주기 ⚡
             <span class="btn-sub-text">(F / 쿨타임 5초)</span>
         </button>
     </div>
@@ -106,10 +106,10 @@
 
 <script>
     const GRID_SIZE = 20;
-    const VISION_RANGE = 8; 
+    const VISION_RANGE = 7; 
     const ENEMY_TICK = 300; 
-    const ZOMBIE_TICK = 500; 
-    const MAX_ZOMBIES = 10;
+    const ZOMBIE_TICK = 400; 
+    const MAX_ZOMBIES = 12;
     const MAX_ENEMIES = 5;
 
     let zombies = [];
@@ -369,6 +369,7 @@
         document.getElementById('escape-count').innerText = totalEscapes;
         document.getElementById('death-count').innerText = totalDeaths;
         document.getElementById('remain-count').innerText = zombies.length;
+        document.getElementById('max-count').innerText = MAX_ZOMBIES;
     }
 
     window.addEventListener('keydown', (e) => { if(e.key.toLowerCase() === 'f') castGrace(); });
