@@ -1,0 +1,489 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>도망자 시뮬레이터 (Overlap Fix)</title>
+    <style>
+        * { box-sizing: border-box; touch-action: manipulation; }
+        body {
+            margin: 0; background-color: #222; display: flex; 
+            justify-content: center; align-items: center; height: 100vh;
+            font-family: 'Malgun Gothic', sans-serif; overflow: hidden;
+        }
+        #app {
+            width: 100%; max-width: 400px; aspect-ratio: 3 / 5;
+            background-color: #fff; position: relative; display: flex; flex-direction: column;
+            box-shadow: 0 0 20px rgba(0,0,0,0.5);
+            transition: all 0.2s;
+            border: 4px solid transparent;
+        }
+
+        #hud {
+            height: 60px; background: #333; color: white;
+            display: flex; justify-content: space-around; align-items: center;
+            font-size: 14px; font-weight: bold;
+        }
+        .stat-item { text-align: center; }
+        .stat-val { color: #4bcffa; font-size: 18px; display: block; }
+        .death-val { color: #ff3f34; }
+
+        #game-board {
+            flex: 1; background: #f0f0f0; position: relative;
+            display: grid;
+            border: 4px solid #333;
+            transition: border-color 0.2s;
+        }
+        
+        .tile {
+            border: 0.1px solid rgba(0,0,0,0.05);
+            display: flex; justify-content: center; align-items: center; 
+            position: relative;
+        }
+        .tile-stone { background-color: #95a5a6; border-radius: 4px; }
+        .tile-goal { background-color: #ff3f34; border-radius: 50%; border: 2px solid #fff; }
+
+        /* [수정 1] position을 absolute로 변경하여 같은 타일에서 완벽하게 겹치도록 설정 */
+        .char { user-select: none; position: absolute; }
+        
+        .aggro::after {
+            content: '❗'; position: absolute; top: -12px; right: -5px;
+            font-size: 10px; color: red; animation: blink 0.5s infinite;
+        }
+        
+        .frozen { filter: grayscale(100%) brightness(150%); opacity: 0.7; }
+
+        @keyframes blink { 0% { opacity: 1; } 50% { opacity: 0; } 100% { opacity: 1; } }
+
+        @keyframes shake {
+            0% { transform: translate(2px, 1px) rotate(0deg); }
+            20% { transform: translate(-3px, 0px) rotate(1deg); }
+            40% { transform: translate(1px, -1px) rotate(1deg); }
+            60% { transform: translate(-3px, 1px) rotate(0deg); }
+            80% { transform: translate(-1px, -1px) rotate(1deg); }
+            100% { transform: translate(1px, -2px) rotate(-1deg); }
+        }
+
+        .shake-red { 
+            animation: shake 0.4s; 
+            border: 10px solid #ff3f34 !important;
+            box-shadow: 0 0 50px #ff3f34 !important;
+        }
+
+        .shake-green { 
+            animation: shake 0.4s; 
+            border: 10px solid #05c46b !important;
+            box-shadow: 0 0 50px #05c46b !important;
+        }
+
+        .gold-flash { border-color: gold !important; box-shadow: 0 0 30px gold !important; }
+
+        #controls { height: 160px; background: #eee; display: flex; padding: 15px; justify-content: space-between; align-items: stretch; gap: 10px; }
+        .left-menu { display: flex; flex-direction: column; justify-content: center; gap: 10px; width: 35%; }
+        .btn-menu { padding: 15px; background: #57606f; color: white; border: none; border-radius: 8px; font-weight: bold; cursor: pointer; }
+        
+        .btn-grace {
+            flex: 1; background: #f1c40f; color: #333; border: none; border-radius: 12px;
+            font-size: 20px; font-weight: bold; display: flex; flex-direction: column; justify-content: center; align-items: center;
+            cursor: pointer; box-shadow: 0 6px #d4ac0d; transition: all 0.1s;
+        }
+        .btn-grace:active { transform: translateY(4px); box-shadow: 0 2px #d4ac0d; }
+        .btn-grace:disabled { background: #bdc3c7; box-shadow: 0 6px #95a5a6; color: #7f8c8d; cursor: not-allowed; }
+        .btn-sub-text { font-size: 12px; font-weight: normal; margin-top: 5px; color: #555; }
+    </style>
+</head>
+<body>
+
+<div id="app">
+    <div id="hud">
+        <div class="stat-item">탈출 성공<span id="escape-count" class="stat-val">0</span></div>
+        <div class="stat-item">사망 횟수<span id="death-count" class="stat-val death-val">0</span></div>
+    </div>
+
+    <div id="game-board"></div>
+
+    <div id="controls">
+        <div class="left-menu">
+            <button onclick="resetGame(true)" class="btn-menu">초기화</button>
+            <div style="font-size: 11px; color: #666; text-align: center;">관찰용 시뮬레이터</div>
+        </div>
+        <button id="btn-grace" class="btn-grace" onclick="castGrace()">
+            은혜 베풀기 ⚡
+            <span class="btn-sub-text">(F / 쿨타임 5초)</span>
+        </button>
+    </div>
+</div>
+
+<script>
+    const GRID_SIZE = 12;
+    const VISION_RANGE = 5; 
+    const ENEMY_TICK = 200; 
+    const ZOMBIE_TICK = 200; 
+
+    let player = { x: -1, y: -1 };
+    let enemies = [];
+    let stones = [];
+    let goal = { x: -1, y: -1 };
+    
+    let escapes = 0;
+    let deaths = 0;
+    
+    let enemyTimer = null;
+    let zombieTimer = null;
+    let isGameOver = false;
+
+    let graceCooldown = false;
+    let enemiesFrozen = false;
+
+    function initGame() {
+        const board = document.getElementById('game-board');
+        board.innerHTML = '';
+        board.style.gridTemplateColumns = `repeat(${GRID_SIZE}, 1fr)`;
+        board.style.gridTemplateRows = `repeat(${GRID_SIZE}, 1fr)`;
+        
+        const dynamicFontSize = Math.floor(350 / GRID_SIZE * 0.6); 
+
+        for (let y = 0; y < GRID_SIZE; y++) {
+            for (let x = 0; x < GRID_SIZE; x++) {
+                const tile = document.createElement('div');
+                tile.className = 'tile';
+                tile.style.fontSize = `${dynamicFontSize}px`; 
+                tile.id = `tile-${x}-${y}`;
+                board.appendChild(tile);
+            }
+        }
+        resetGame(false);
+    }
+
+    function getRandomPos() {
+        return { x: Math.floor(Math.random() * GRID_SIZE), y: Math.floor(Math.random() * GRID_SIZE) };
+    }
+
+    function isOccupied(x, y) {
+        if (player.x === x && player.y === y) return true;
+        if (enemies.some(e => e.x === x && e.y === y)) return true;
+        if (stones.some(s => s.x === x && s.y === y)) return true;
+        if (goal.x === x && goal.y === y) return true;
+        return false;
+    }
+
+    function isBlocked(x, y) {
+        if (x < 0 || y < 0 || x >= GRID_SIZE || y >= GRID_SIZE) return true;
+        if (stones.some(s => s.x === x && s.y === y)) return true;
+        return false;
+    }
+
+    function isMapConnected(stoneList) {
+        let grid = Array.from(Array(GRID_SIZE), () => Array(GRID_SIZE).fill(0));
+        stoneList.forEach(s => grid[s.y][s.x] = 1);
+        
+        let start = null;
+        let emptyCount = 0;
+        for (let y = 0; y < GRID_SIZE; y++) {
+            for (let x = 0; x < GRID_SIZE; x++) {
+                if (grid[y][x] === 0) {
+                    emptyCount++;
+                    if (!start) start = { x, y };
+                }
+            }
+        }
+        if (!start) return false;
+
+        let queue = [start];
+        let visited = new Set([`${start.x},${start.y}`]);
+        let dirs = [[0,1], [0,-1], [1,0], [-1,0]];
+        
+        while (queue.length > 0) {
+            let curr = queue.shift();
+            for (let d of dirs) {
+                let nx = curr.x + d[0];
+                let ny = curr.y + d[1];
+                if (nx >= 0 && nx < GRID_SIZE && ny >= 0 && ny < GRID_SIZE && grid[ny][nx] === 0) {
+                    let key = `${nx},${ny}`;
+                    if (!visited.has(key)) {
+                        visited.add(key);
+                        queue.push({ x: nx, y: ny });
+                    }
+                }
+            }
+        }
+        return visited.size === emptyCount;
+    }
+
+    function getNextStepBFS(startX, startY, targetX, targetY) {
+        let queue = [{ x: startX, y: startY, path: [] }];
+        let visited = new Set([`${startX},${startY}`]);
+        let dirs = [[0,1], [0,-1], [1,0], [-1,0]]; 
+
+        while (queue.length > 0) {
+            let curr = queue.shift();
+
+            if (curr.x === targetX && curr.y === targetY) {
+                return curr.path.length > 0 ? curr.path[0] : null;
+            }
+
+            for (let d of dirs) {
+                let nx = curr.x + d[0], ny = curr.y + d[1];
+                if (!isBlocked(nx, ny) && !visited.has(`${nx},${ny}`)) {
+                    visited.add(`${nx},${ny}`);
+                    let step = curr.path.length === 0 ? {x: nx, y: ny} : curr.path[0];
+                    queue.push({ x: nx, y: ny, path: [step] });
+                }
+            }
+        }
+        return null; 
+    }
+
+    function resetGame(fullReset) {
+        if (fullReset) { escapes = 0; deaths = 0; updateHUD(); }
+        isGameOver = false;
+        
+        const app = document.getElementById('app');
+        app.className = '';
+        
+        player = { x: -1, y: -1 };
+        goal = { x: -1, y: -1 };
+        enemies = [];
+        
+        let attempts = 0;
+        do {
+            stones = [];
+            let stoneFailsafe = 0;
+            while (stones.length < 15 && stoneFailsafe < 500) {
+                let p = getRandomPos();
+                if (!stones.some(s => s.x === p.x && s.y === p.y)) stones.push(p);
+                stoneFailsafe++;
+            }
+            attempts++;
+        } while (!isMapConnected(stones) && attempts < 100);
+
+        let tempPlayer, pFailsafe = 0;
+        do { tempPlayer = getRandomPos(); pFailsafe++; } while (isOccupied(tempPlayer.x, tempPlayer.y) && pFailsafe < 500);
+        player = tempPlayer;
+
+        let tempGoal, gFailsafe = 0;
+        do { tempGoal = getRandomPos(); gFailsafe++; } while (isOccupied(tempGoal.x, tempGoal.y) && gFailsafe < 500);
+        goal = tempGoal;
+        
+        for (let i = 0; i < 4; i++) {
+            let tempEnemy, eFailsafe = 0;
+            do {
+                tempEnemy = getRandomPos();
+                eFailsafe++;
+            } while ((isOccupied(tempEnemy.x, tempEnemy.y) || 
+                     Math.abs(tempEnemy.x - player.x) + Math.abs(tempEnemy.y - player.y) <= 4) && eFailsafe < 500);
+            enemies.push({ x: tempEnemy.x, y: tempEnemy.y, isChasing: false });
+        }
+
+        render();
+
+        clearInterval(enemyTimer);
+        enemyTimer = setInterval(() => {
+            if (!isGameOver) {
+                moveEnemies();
+                checkCollision();
+                render();
+            }
+        }, ENEMY_TICK);
+
+        clearInterval(zombieTimer);
+        zombieTimer = setInterval(() => {
+            if (!isGameOver) {
+                moveZombieAI();
+                checkCollision();
+                render();
+            }
+        }, ZOMBIE_TICK);
+    }
+
+    function render() {
+        // [수정 2] 마지막 겹친 프레임이 무시되지 않도록 if (isGameOver) return; 코드를 삭제했습니다.
+        
+        document.querySelectorAll('.tile').forEach(t => {
+            t.className = 'tile';
+            t.innerHTML = '';
+        });
+
+        const drawTile = (x, y, className, content = '') => {
+            if (x < 0 || y < 0 || x >= GRID_SIZE || y >= GRID_SIZE) return;
+            const el = document.getElementById(`tile-${x}-${y}`);
+            if (el) {
+                if (className) el.classList.add(className);
+                // [수정 3] 덮어쓰기(=)가 아니라 이어붙이기(+=)로 변경하여 여러 마리가 겹칠 수 있게 함
+                if (content) el.innerHTML += content; 
+            }
+        };
+
+        stones.forEach(s => drawTile(s.x, s.y, 'tile-stone'));
+        drawTile(goal.x, goal.y, 'tile-goal');
+        
+        // Z-index를 부여하여 좀비(11)가 밑에, 적(12)이 위에 오도록 설정
+        drawTile(player.x, player.y, null, '<span class="char" style="z-index: 11;">🧟</span>');
+        
+        enemies.forEach(en => {
+            let charClass = 'char';
+            if (enemiesFrozen) charClass += ' frozen';
+            else if (en.isChasing) charClass += ' aggro';
+            drawTile(en.x, en.y, null, `<span class="${charClass}" style="z-index: 12;">😎</span>`);
+        });
+    }
+
+    let lastZombiePos = { x: -1, y: -1 }; 
+
+    function moveZombieAI() {
+        let closestEnemy = null;
+        let minDist = Infinity;
+        enemies.forEach(en => {
+            let dist = Math.abs(player.x - en.x) + Math.abs(player.y - en.y);
+            if (dist < minDist) { minDist = dist; closestEnemy = en; }
+        });
+
+        if (!enemiesFrozen && minDist <= 3 && closestEnemy) {
+            let bestDist = -1;
+            let bestMoves = [];
+            let dirs = [[0,1], [0,-1], [1,0], [-1,0]];
+            
+            for (let d of dirs) {
+                let nx = player.x + d[0], ny = player.y + d[1];
+                if (!isBlocked(nx, ny)) {
+                    let minEnemyDist = Infinity;
+                    enemies.forEach(e => {
+                        let distToEnemy = Math.abs(nx - e.x) + Math.abs(ny - e.y);
+                        if(distToEnemy < minEnemyDist) minEnemyDist = distToEnemy;
+                    });
+
+                    if (lastZombiePos.x === nx && lastZombiePos.y === ny) {
+                        minEnemyDist -= 0.1;
+                    }
+
+                    if (minEnemyDist > bestDist) {
+                        bestDist = minEnemyDist;
+                        bestMoves = [{x: nx, y: ny}]; 
+                    } else if (minEnemyDist === bestDist) {
+                        bestMoves.push({x: nx, y: ny}); 
+                    }
+                }
+            }
+            
+            if (bestMoves.length > 0) {
+                let chosen = bestMoves[Math.floor(Math.random() * bestMoves.length)];
+                lastZombiePos = { x: player.x, y: player.y }; 
+                player.x = chosen.x; 
+                player.y = chosen.y;
+            }
+        } 
+        else {
+            let nextStep = getNextStepBFS(player.x, player.y, goal.x, goal.y);
+            if (nextStep) {
+                lastZombiePos = { x: player.x, y: player.y };
+                player.x = nextStep.x;
+                player.y = nextStep.y;
+            }
+        }
+    }
+
+    function moveEnemies() {
+        if (enemiesFrozen) return;
+
+        enemies.forEach(en => {
+            let dist = Math.abs(player.x - en.x) + Math.abs(player.y - en.y);
+
+            if (dist <= VISION_RANGE) {
+                en.isChasing = true;
+                let nextStep = getNextStepBFS(en.x, en.y, player.x, player.y);
+                if (nextStep) {
+                    en.x = nextStep.x;
+                    en.y = nextStep.y;
+                }
+            } 
+            else {
+                en.isChasing = false;
+                const dirs = [[0,1], [0,-1], [1,0], [-1,0]];
+                let shuffledDirs = dirs.sort(() => Math.random() - 0.5);
+                for (let d of shuffledDirs) {
+                    let nx = en.x + d[0], ny = en.y + d[1];
+                    if (!isBlocked(nx, ny)) {
+                        en.x = nx;
+                        en.y = ny;
+                        break;
+                    }
+                }
+            }
+        });
+    }
+
+    function castGrace() {
+        if (graceCooldown || isGameOver) return;
+
+        const btn = document.getElementById('btn-grace');
+        const board = document.getElementById('game-board');
+        
+        graceCooldown = true;
+        btn.disabled = true;
+        btn.innerHTML = `재충전 중... <span class="btn-sub-text"></span>`;
+
+        enemiesFrozen = true;
+        document.getElementById('app').classList.add('gold-flash');
+        render();
+
+        setTimeout(() => {
+            enemiesFrozen = false;
+            document.getElementById('app').classList.remove('gold-flash');
+            checkCollision(); 
+            render();
+        }, 2000);
+
+        setTimeout(() => {
+            graceCooldown = false;
+            btn.disabled = false;
+            btn.innerHTML = `은혜 베풀기 ⚡ <span class="btn-sub-text">(F / 쿨타임 5초)</span>`;
+        }, 5000);
+    }
+
+    function checkCollision() {
+        if (isGameOver) return;
+        const app = document.getElementById('app');
+
+        if (player.x === goal.x && player.y === goal.y) {
+            escapes++;
+            updateHUD();
+            app.classList.add('shake-green');
+            endGame(); // 여기서 endGame() 호출 후
+        } 
+        else if (!enemiesFrozen && enemies.some(en => en.x === player.x && en.y === player.y)) {
+            deaths++;
+            updateHUD();
+            app.classList.add('shake-red');
+            endGame(); // 여기서 endGame() 호출
+        }
+    }
+
+    function endGame() {
+        isGameOver = true;
+        clearInterval(enemyTimer);
+        clearInterval(zombieTimer);
+        
+        // [수정 4] 타이머가 멈춘 상태에서 '최종 겹친 프레임'을 화면에 렌더링
+        render(); 
+        
+        // 타격감을 여유 있게 즐길 수 있도록 딜레이를 800ms로 조절
+        setTimeout(() => { 
+            resetGame(false); 
+        }, 800);
+    }
+
+    function updateHUD() {
+        document.getElementById('escape-count').innerText = escapes;
+        document.getElementById('death-count').innerText = deaths;
+    }
+
+    window.addEventListener('keydown', (e) => {
+        if (e.key.toLowerCase() === 'f') {
+            castGrace();
+        }
+    });
+
+    initGame();
+</script>
+</body>
+</html>
